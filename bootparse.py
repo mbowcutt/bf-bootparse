@@ -18,6 +18,9 @@ class SpiReadBlock():
     def __str__(self):
         return "\t0x{:06X}\t0x{:06X}\t({})".format(self.addr, self.addr + len(self.data), len(self.data))
 
+    def __len__(self):
+        return len(self.data)
+
 def parse_file_csv(filename):
     bstream_file = open(filename)
     bstream_reader = csv.reader(bstream_file)
@@ -41,12 +44,19 @@ MEM_ADDR_BITSIZE_16 = 2
 MEM_ADDR_BITSIZE_24 = 3
 MEM_ADDR_BITSIZE_32 = 4
 
+STATE_PROCESS_HEADER = 0
+STATE_COPY_DATA = 1
+STATE_FILL = 2
+
 class boot_stream_parser():
 
     def __init__(self, bytes):
         self.cursor = 0
         self.addr_bitsize = MEM_ADDR_BITSIZE_UNINIT
         self.bytes = bytes
+        self.state = STATE_PROCESS_HEADER
+        self.header_buf = []
+        self.header = None
 
     # Detects if the SPI memory device requires an 8, 16, 24, or 32 bit addressing scheme
     def detect_address_size(self):
@@ -108,6 +118,89 @@ class boot_stream_parser():
         self.cursor += 3
         return addr
 
+    def handle_block(self, block):
+
+        if STATE_PROCESS_HEADER == self.state:
+            self.header = self.parse_header(block)
+            if (self.header is None):
+                return
+
+            if (self.header.validate()):
+                print(self.header)
+                if (self.header.block_code & BFLAG_IGNORE):
+                    print("Ignoring block...")
+                    return
+
+                elif (self.header.block_code & BFLAG_FILL):
+                    self.apply_fill()
+
+                else:
+                    self.state = STATE_COPY_DATA
+            
+            else:
+                print("Header is invalid")
+                raise RuntimeError
+
+        elif STATE_COPY_DATA == self.state:
+
+            self.copy_data()
+            self.state = STATE_PROCESS_HEADER
+    
+    def parse_header(self, block):
+        if (16 == len(block.data)):
+            return StreamBlockHeader(block.data)
+
+        elif (8 == len(block.data)):
+            for byte in block.data:
+                self.header_buf.append(byte)
+            if (16 == len(self.header_buf)):
+                header = StreamBlockHeader(self.header_buf)
+                self.header_buf.clear()
+                return header
+            elif (16 < len(self.header_buf)):
+                raise RuntimeError
+        else:
+            raise RuntimeError
+
+    def apply_fill(self):
+
+        if (self.header.is_within_SRAM()):
+            print("Filling {} bytes in SRAM at 0x{:08X}"
+                .format(self.header.byte_count, self.header.target_address))
+            data_file.seek(self.header.target_address - 0xFF800000, 0)
+            for idx in range(0, self.header.byte_count):
+                data_file.write(int(self.header.argument).to_bytes())
+
+        elif (self.header.is_within_bootrom()):
+            print("Filling {} bytes in Boot ROM at 0x{:08X}"
+                .format(self.header.byte_count, self.header.target_address))
+            instruction_file.seek(self.header.target_address - 0xFFA00000, 0)
+            for idx in range(0, self.header.byte_count):
+                instruction_file.write(int(self.header.argument).to_bytes())
+
+        else:
+            raise RuntimeError
+    
+    def copy_data(self):
+
+        if (self.header.is_within_SRAM()):
+            print("Copying {} bytes to SRAM at 0x{:08X}"
+                .format(self.header.byte_count, self.header.target_address))
+            data_file.seek(self.header.target_address - 0xFF800000, 0)
+            for byte in block.data[0:self.header.byte_count]:
+                data_file.write(byte.to_bytes())
+
+        elif (self.header.is_within_bootrom()):
+            print("Copying {} bytes to Boot ROM at 0x{:08X}"
+                .format(self.header.byte_count, self.header.target_address))
+            instruction_file.seek(self.header.target_address - 0xFFA00000, 0)
+            for byte in block.data[0:self.header.byte_count]:
+                instruction_file.write(byte.to_bytes())
+
+        else:
+            raise RuntimeError
+
+            
 
 HDRSGN          = 0xAD000000
 HDRSGN_MASK     = 0XFF000000
@@ -123,6 +216,7 @@ BFLAG_QUICKBOOT = 0x00000200
 BFLAG_FILL      = 0x00000100
 BFLAG_AUX       = 0x00000020
 BFLAG_SAVE      = 0x00000010
+BFLAG_MASK      = 0x0000FF30
 
 DMA_MASK        = 0x0000000F
 
@@ -134,19 +228,23 @@ class StreamBlockHeader():
         self.byte_count = int.from_bytes(reversed(raw[8:12]))
         self.argument = int.from_bytes(reversed(raw[12:16]))
 
-        if (self.block_code & BFLAG_FIRST):
-            print("BFLAG_FIRST")
-        if (self.block_code & BFLAG_FINAL):
-            print("BFLAG_FINAL")
-        
-
     def __str__(self):
         return ("Block Code:\t{:08X}\nTarget Address:\t{:08X}\nByte Count:\t{:08X}\nArgument:\t{:08X}"
                     .format(self.block_code, self.target_address, self.byte_count, self.argument))
     
-    def hdrsgn(self):
+    def validate(self):
+
+        # TODO Check CRC
+
         return (HDRSGN == (self.block_code & HDRSGN_MASK))
 
+    def is_within_SRAM(self):
+        return (self.target_address >= 0xFF800000) and \
+                ((self.target_address + self.byte_count) <= 0xFF807FFF)
+    
+    def is_within_bootrom(self):
+        return (self.target_address >= 0xFFA00000) and \
+                ((self.target_address + self.byte_count) <= 0xFFA07FFF)
         
 bytes = parse_file_csv(sys.argv[1])
 parser = boot_stream_parser(bytes)
@@ -165,100 +263,13 @@ while (block):
         block = 0
 
 
-
-STATE_PROCESS_HEADER = 0
-STATE_COPY_DATA = 1
-STATE_FILL = 2
-
 data_file = open("SRAM.bin", "wb")
 instruction_file = open("boot.bin", "wb")
 loader_file = open("bootstream.ldr", "wb")
 
-state = STATE_PROCESS_HEADER
-header_buf = []
-image_buf = []
 block_count = 0
 for block in blocks:
-    print()
-    print("Block {}\t\t{}".format(block_count, block))
-    if (STATE_PROCESS_HEADER == state):
-        for idx in range(0, min(16, 16 - len(header_buf), len(block.data))):
-            header_buf.append(block.data[idx])
-
-        if (16 == len(header_buf)):
-            header = StreamBlockHeader(header_buf)
-            for byte in header_buf:
-                loader_file.write(byte.to_bytes())
-            header_buf.clear()
-
-            if (header.hdrsgn()):
-                # print(header)
-                if (header.block_code & BFLAG_FIRST):
-                    print("First block. Init Address=0x{:08X} Size=0x{:X}"
-                          .format(header.target_address, header.argument))
-
-                if (header.block_code & BFLAG_IGNORE):
-                    print("Ignoring block...")
-                    block_count += 1
-                    continue
-                elif (header.block_code & BFLAG_FILL):
-                    print("Zero-filling {} bytes at 0x{:08X}".format(header.byte_count, header.target_address))
-                    if (header.target_address >= 0xFF800000) and ((header.target_address + header.byte_count) <= 0xFF807FFF):
-                        data_file.seek(header.target_address - 0xFF800000)
-                        for idx in range(0, header.byte_count):
-                            data_file.write(int(0).to_bytes())
-                    elif (header.target_address >= 0xFFA00000) and ((header.target_address + header.byte_count) <= 0xFFA07FFF):
-                        instruction_file.seek(header.target_address - 0xFFA00000)
-                        for idx in range(0, header.byte_count):
-                            instruction_file.write(int(0).to_bytes())
-                    else:
-                        raise RuntimeError
-                elif (header.block_code & BFLAG_INDIRECT):
-                    print("TODO: handle indirect")
-                elif ((header.block_code & BFLAG_INIT) or
-                      (header.block_code & BFLAG_CALLBACK) or
-                      (header.block_code & BFLAG_QUICKBOOT) or
-                      (header.block_code & BFLAG_AUX) or
-                      (header.block_code & BFLAG_SAVE)):
-                    print("TODO: handle unplanned flag")
-                else:
-                    print("Preparing to copy bytes..")
-                    state = STATE_COPY_DATA
-            else:
-                print(header)
-        else:
-            print("Header buffer incomplete. Continuing...")
-    elif (STATE_COPY_DATA == state):
-        print("Copying {} bytes!!!".format(header.byte_count))
-        if (header.byte_count > len(block.data)):
-            raise RuntimeError
-        
-        for byte in block.data[0:header.byte_count]:
-            loader_file.write(byte.to_bytes())
-
-        if (header.target_address >= 0xFF800000) and (header.target_address <= 0xFF807FFF):
-            if (0xFF807FFF < (header.target_address + header.byte_count)):
-                raise RuntimeError # cannot fall into next memory range
-            else:
-                # copy to data bank
-                data_file.seek(header.target_address - 0xFF800000, 0)
-                for byte in block.data[0:header.byte_count]:
-                    data_file.write(byte.to_bytes())
-
-        elif (header.target_address >= 0xFFA00000) and (header.target_address <= 0xFFA07FFF):
-            if (0xFFA07FFF < (header.target_address + header.byte_count)):
-                raise RuntimeError
-            else:
-                # Write into next image         
-                instruction_file.seek(header.target_address - 0xFFA00000, 0)
-                for byte in block.data[0:header.byte_count]:
-                    instruction_file.write(byte.to_bytes())
-
-        else:
-            raise RuntimeError
-        
-        state = STATE_PROCESS_HEADER
-
+    parser.handle_block(block)
     block_count += 1
 
 data_file.close()
