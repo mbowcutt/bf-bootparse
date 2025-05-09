@@ -21,20 +21,6 @@ class SpiReadBlock():
     def __len__(self):
         return len(self.data)
 
-def parse_file_csv(filename):
-    bstream_file = open(filename)
-    bstream_reader = csv.reader(bstream_file)
-
-    csv_header = next(bstream_reader)
-
-    bytes = []
-    for line in csv.reader(bstream_file):
-        bytes.append(SpiByte(int(line[2],16), int(line[3],16)))
-
-    bstream_file.close()
-
-    return bytes
-
 SPI_CMD_READ        = 0x03
 SPI_CMD_READ_FAST   = 0x0B
 
@@ -48,23 +34,36 @@ STATE_PROCESS_HEADER = 0
 STATE_COPY_DATA = 1
 STATE_FILL = 2
 
-class boot_stream_parser():
+class BootstreamParser():
 
-    def __init__(self, bytes):
+    def __init__(self, filename):
         self.cursor = 0
         self.addr_bitsize = MEM_ADDR_BITSIZE_UNINIT
-        self.bytes = bytes
         self.state = STATE_PROCESS_HEADER
         self.header_buf = []
         self.header = None
+        self.stream = self.parse_file_csv(filename)
+        self.loader_file = open("bootstream.ldr", "wb")
+        self.data_file = open("SRAM.bin", "wb")
+        self.instruction_file = open("boot.bin", "wb")
+
+    def parse_file_csv(self, filename):
+        with open(filename, 'r') as bstream_file:
+            csv_header = next(bstream_file)
+
+            spi_byte_arr = []
+            for line in csv.reader(bstream_file):
+                spi_byte_arr.append(SpiByte(int(line[2],16), int(line[3],16)))
+
+        return spi_byte_arr
 
     # Detects if the SPI memory device requires an 8, 16, 24, or 32 bit addressing scheme
     def detect_address_size(self):
         print("SPI Read Command - Detecting Address Size")
 
-        if (0x0B == bytes[self.cursor].mosi):
+        if (0x0B == self.stream[self.cursor].mosi):
             fastread = True
-        elif (0x03 == bytes[self.cursor].mosi):
+        elif (0x03 == self.stream[self.cursor].mosi):
             fastread = False
         else:
             raise RuntimeError
@@ -73,7 +72,7 @@ class boot_stream_parser():
 
         data_idx = 1
         end_idx = 5 if fastread else 4
-        stream = bytes[self.cursor : self.cursor + end_idx]
+        stream = self.stream[self.cursor : self.cursor + end_idx]
         
         while (0xFF == stream[data_idx].miso) and (end_idx >= data_idx):
             data_idx += 1
@@ -89,14 +88,16 @@ class boot_stream_parser():
             self.cursor += self.addr_bitsize + 1
 
     def read_memory_block(self):
-        if (0x03 != bytes[self.cursor].mosi):
-            raise RuntimeError
+
+        if (0x03 != self.stream[self.cursor].mosi):
+            return None
+
         self.cursor += 1
 
         addr = self.parse_address()
         data = []
-        while (0x00 == bytes[self.cursor].mosi):
-            data.append(bytes[self.cursor].miso)
+        while (0x00 == self.stream[self.cursor].mosi):
+            data.append(self.stream[self.cursor].miso)
             self.cursor += 1
 
         # if (0 != (len(data) % 4)):
@@ -105,7 +106,7 @@ class boot_stream_parser():
         return SpiReadBlock(addr, data)
 
     def parse_address(self):
-        addr_bytes = bytes[self.cursor : self.cursor + 3]
+        addr_bytes = self.stream[self.cursor : self.cursor + 3]
         addr = (addr_bytes[0].mosi   << 16 
                 | addr_bytes[1].mosi << 8
                 | addr_bytes[2].mosi)
@@ -141,10 +142,16 @@ class boot_stream_parser():
                 print("Header is invalid")
                 raise RuntimeError
 
+            for byte in block.data:
+                self.loader_file.write(byte.to_bytes())
+
         elif STATE_COPY_DATA == self.state:
 
             self.copy_data()
             self.state = STATE_PROCESS_HEADER
+
+            for byte in block.data[0:self.header.byte_count]:
+                self.loader_file.write(byte.to_bytes())
     
     def parse_header(self, block):
         if (16 == len(block.data)):
@@ -167,16 +174,16 @@ class boot_stream_parser():
         if (self.header.is_within_SRAM()):
             print("Filling {} bytes in SRAM at 0x{:08X}"
                 .format(self.header.byte_count, self.header.target_address))
-            data_file.seek(self.header.target_address - 0xFF800000, 0)
+            self.data_file.seek(self.header.target_address - 0xFF800000, 0)
             for idx in range(0, self.header.byte_count):
-                data_file.write(int(self.header.argument).to_bytes())
+                self.data_file.write(int(self.header.argument).to_bytes())
 
         elif (self.header.is_within_bootrom()):
             print("Filling {} bytes in Boot ROM at 0x{:08X}"
                 .format(self.header.byte_count, self.header.target_address))
-            instruction_file.seek(self.header.target_address - 0xFFA00000, 0)
+            self.instruction_file.seek(self.header.target_address - 0xFFA00000, 0)
             for idx in range(0, self.header.byte_count):
-                instruction_file.write(int(self.header.argument).to_bytes())
+                self.instruction_file.write(int(self.header.argument).to_bytes())
 
         else:
             raise RuntimeError
@@ -186,21 +193,19 @@ class boot_stream_parser():
         if (self.header.is_within_SRAM()):
             print("Copying {} bytes to SRAM at 0x{:08X}"
                 .format(self.header.byte_count, self.header.target_address))
-            data_file.seek(self.header.target_address - 0xFF800000, 0)
+            self.data_file.seek(self.header.target_address - 0xFF800000, 0)
             for byte in block.data[0:self.header.byte_count]:
-                data_file.write(byte.to_bytes())
+                self.data_file.write(byte.to_bytes())
 
         elif (self.header.is_within_bootrom()):
             print("Copying {} bytes to Boot ROM at 0x{:08X}"
                 .format(self.header.byte_count, self.header.target_address))
-            instruction_file.seek(self.header.target_address - 0xFFA00000, 0)
+            self.instruction_file.seek(self.header.target_address - 0xFFA00000, 0)
             for byte in block.data[0:self.header.byte_count]:
-                instruction_file.write(byte.to_bytes())
+                self.instruction_file.write(byte.to_bytes())
 
         else:
             raise RuntimeError
-
-            
 
 HDRSGN          = 0xAD000000
 HDRSGN_MASK     = 0XFF000000
@@ -245,33 +250,14 @@ class StreamBlockHeader():
     def is_within_bootrom(self):
         return (self.target_address >= 0xFFA00000) and \
                 ((self.target_address + self.byte_count) <= 0xFFA07FFF)
-        
-bytes = parse_file_csv(sys.argv[1])
-parser = boot_stream_parser(bytes)
+
+parser = BootstreamParser(sys.argv[1], )
 parser.detect_address_size()
 
-blocks = []
+block_ctr = 0
 block = parser.read_memory_block()
-while (block):
-    print("{} ".format(len(blocks)) + block.__str__())
-    blocks.append(block)
-
-    try:
-        block = parser.read_memory_block()
-    except:
-        print("SPI Read parsing complete")
-        block = 0
-
-
-data_file = open("SRAM.bin", "wb")
-instruction_file = open("boot.bin", "wb")
-loader_file = open("bootstream.ldr", "wb")
-
-block_count = 0
-for block in blocks:
+while block:
+    print("{} ".format(block_ctr) + str(block))
     parser.handle_block(block)
-    block_count += 1
-
-data_file.close()
-instruction_file.close()
-loader_file.close()
+    block = parser.read_memory_block()
+    block_ctr += 1
