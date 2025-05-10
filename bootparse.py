@@ -18,17 +18,18 @@ class BootstreamParser():
     binaries for the SRAM and Boot ROM.
     """
 
-    def __init__(self, filename):
+    def __init__(self, csv_filename, loader_file=None,
+                 data_file=None, instruction_file=None):
         self.cursor = 0
         self.addr_bytesize = None
         self.state = STATE_PROCESS_HEADER
         self.header_buf = []
         self.header = None
         self.headers = []
-        self.stream = self.parse_file_csv(filename)
-        self.loader_file = open("bootstream.ldr", "wb")
-        self.data_file = open("SRAM.bin", "wb")
-        self.instruction_file = open("boot.bin", "wb")
+        self.stream = self.parse_file_csv(csv_filename)
+        self.loader_file = open(loader_file, "wb")
+        self.data_file = open(data_file, "wb")
+        self.instruction_file = open(instruction_file, "wb")
         self.blocks = []
 
     def parse_file_csv(self, filename):
@@ -108,12 +109,14 @@ class BootstreamParser():
             None
         """
 
-        while SPI_CMD_READ == self.stream[self.cursor]['MOSI']:
+        while (self.cursor < len(self.stream)) and \
+                (SPI_CMD_READ == self.stream[self.cursor]['MOSI']):
             self.cursor += 1
 
             addr = self.parse_address()
             data = []
-            while 0x00 == self.stream[self.cursor]['MOSI']:
+            while (self.cursor < len(self.stream)) and \
+                    (0x00 == self.stream[self.cursor]['MOSI']):
                 data.append(self.stream[self.cursor]['MISO'])
                 self.cursor += 1
 
@@ -381,7 +384,8 @@ class StreamBlockHeader():
         else:
             raise RuntimeError
 
-parser = BootstreamParser(sys.argv[1])
+parser = BootstreamParser(sys.argv[1], 'dist/bootstream.ldr',
+                          'dist/sram.bin', 'dist/bootrom.bin')
 parser.detect_address_size()
 parser.read_memory_blocks()
 
@@ -398,3 +402,7 @@ print("#\tBlock Code\tTarget Addr\tByte Count\tArgument")
 print("----------------------------------------------------------------")
 for index, block_header in enumerate(parser.headers):
     print(f"{index}\t{block_header}")
+
+parser.loader_file.close()
+parser.data_file.close()
+parser.instruction_file.close()
