@@ -210,16 +210,55 @@ class SpiReadBlock():
     """
 
     header_buf = []
+    count = 0
 
     def __init__(self, addr, data):
         self.addr = addr
         self.data = data
+        self.block_index = SpiReadBlock.count
+        SpiReadBlock.count += 1
 
     def __str__(self):
-        return f"0x{self.addr:06X}\t0x{self.addr+len(self.data):06X}\t{len(self.data):>6}"
+        return f"{self.block_index}\t" + \
+               f"0x{self.addr:06X}\t" + \
+               f"0x{self.addr+len(self.data):06X}\t" + \
+               f"{len(self.data):>6}"
 
     def __len__(self):
         return len(self.data)
+
+
+    @staticmethod
+    def print_table_header():
+        """
+        Prints the header of the block table.
+
+        This function prints the header of the block table, which includes
+        the column names for the start address, end address, and size.
+        """
+
+        print("#\tStart Addr\tEnd Addr\t  Size")
+        print("----------------------------------------------")
+
+
+    @staticmethod
+    def print_block_table(blocks):
+        """
+        Prints the block table.
+
+        This function prints the block table, which includes the start address,
+        end address, and size of each block.
+
+        Args:
+            blocks (list[SpiReadBlock]): The list of blocks to be printed.
+        Returns:
+            None
+        """
+
+        SpiReadBlock.print_table_header()
+        for block in blocks:
+            print(f"{block}")
+
 
     def parse_header(self):
         """
@@ -236,13 +275,14 @@ class SpiReadBlock():
         """
 
         if 16 == len(self.data):
-            return StreamBlockHeader(self.data)
+            return StreamBlockHeader(self.data, self.block_index)
 
         if 8 == len(self.data):
             for byte in self.data:
                 SpiReadBlock.header_buf.append(byte)
             if 16 == len(self.header_buf):
-                header = StreamBlockHeader(SpiReadBlock.header_buf)
+                header = StreamBlockHeader(SpiReadBlock.header_buf,
+                                           self.block_index)
                 SpiReadBlock.header_buf.clear()
                 return header
             if 16 < len(SpiReadBlock.header_buf):
@@ -250,24 +290,6 @@ class SpiReadBlock():
         else:
             raise RuntimeError
 
-
-HDRSGN          = 0xAD000000
-HDRSGN_MASK     = 0XFF000000
-HDRCHK_MASK     = 0x00FF0000
-
-BFLAG_FINAL     = 0x00008000
-BFLAG_FIRST     = 0x00004000
-BFLAG_INDIRECT  = 0x00002000
-BFLAG_IGNORE    = 0x00001000
-BFLAG_INIT      = 0x00000800
-BFLAG_CALLBACK  = 0x00000400
-BFLAG_QUICKBOOT = 0x00000200
-BFLAG_FILL      = 0x00000100
-BFLAG_AUX       = 0x00000020
-BFLAG_SAVE      = 0x00000010
-BFLAG_MASK      = 0x0000FF30
-
-DMA_MASK        = 0x0000000F
 
 class StreamBlockHeader():
     """
@@ -279,17 +301,75 @@ class StreamBlockHeader():
     copying.
     """
 
-    def __init__(self, raw):
-        self.block_code = int.from_bytes(reversed(raw[0:4]))
-        self.target_address = int.from_bytes(reversed(raw[4:8]))
-        self.byte_count = int.from_bytes(reversed(raw[8:12]))
-        self.argument = int.from_bytes(reversed(raw[12:16]))
+    HDRSGN          = 0xAD000000
+    HDRSGN_MASK     = 0XFF000000
+    HDRCHK_MASK     = 0x00FF0000
+
+    BFLAG_FINAL     = 0x00008000
+    BFLAG_FIRST     = 0x00004000
+    BFLAG_INDIRECT  = 0x00002000
+    BFLAG_IGNORE    = 0x00001000
+    BFLAG_INIT      = 0x00000800
+    BFLAG_CALLBACK  = 0x00000400
+    BFLAG_QUICKBOOT = 0x00000200
+    BFLAG_FILL      = 0x00000100
+    BFLAG_AUX       = 0x00000020
+    BFLAG_SAVE      = 0x00000010
+    BFLAG_MASK      = 0x0000FF30
+
+    DMA_MASK        = 0x0000000F
+
+    header_count = 0
+
+    def __init__(self, raw, block_idx):
+        self.fields = { "BLOCK CODE": int.from_bytes(reversed(raw[0:4])),
+                        "TARGET ADDRESS": int.from_bytes(reversed(raw[4:8])),
+                        "BYTE COUNT": int.from_bytes(reversed(raw[8:12])),
+                        "ARGUMENT": int.from_bytes(reversed(raw[12:16])) }
+        self.block_idx = block_idx
+        self.header_idx = StreamBlockHeader.header_count
+        StreamBlockHeader.header_count += 1
 
     def __str__(self):
-        return f"{block_header.block_code:08X}\t" + \
-               f"{block_header.target_address:08X}\t" + \
-               f"{block_header.byte_count:08X}\t" + \
-               f"{block_header.argument:08X}"
+        return f"{self.header_idx}\t" +\
+               f"{self.fields["BLOCK CODE"]:08X}\t" + \
+               f"{self.fields["TARGET ADDRESS"]:08X}\t" + \
+               f"{self.fields["BYTE COUNT"]:08X}\t" + \
+               f"{self.fields["ARGUMENT"]:08X}"
+
+
+    @staticmethod
+    def print_table_header():
+        """
+        Prints the header of the block header table.
+
+        This function prints the header of the block header table, which
+        includes the column names for the block code, target address,
+        byte count, and argument.
+        """
+
+        print("#\tBlock Code\tTarget Addr\tByte Count\tArgument")
+        print("----------------------------------------------------------------")
+
+
+    @staticmethod
+    def print_header_table(headers):
+        """
+        Prints the block header table.
+
+        This function prints the block header table, which includes the
+        block code, target address, byte count, and argument of each
+        block header.
+
+        Args:
+            headers (list[StreamBlockHeader]): The list of block headers to be printed.
+        Returns:
+            None
+        """
+
+        StreamBlockHeader.print_table_header()
+        for header in headers:
+            print(f"{header}")
 
     def validate(self):
         """
@@ -308,8 +388,25 @@ class StreamBlockHeader():
 
         # TODO Check CRC
 
-        return HDRSGN == (self.block_code & HDRSGN_MASK)
-    
+        return StreamBlockHeader.HDRSGN == \
+                   (self.fields["BLOCK CODE"] & StreamBlockHeader.HDRSGN_MASK)
+
+
+    def flags(self):
+        """
+        Returns the flags of the block header.
+        This function extracts the flags from the block header. The flags
+        are used to determine the type of operation to be performed on
+        the target address.
+        Args:
+            None
+        Returns:
+            int: The flags of the block header.
+        """
+
+        return self.fields["BLOCK CODE"] & StreamBlockHeader.BFLAG_MASK
+
+
     def ignore(self):
         """
         Checks if the block header should be ignored.
@@ -323,8 +420,9 @@ class StreamBlockHeader():
             bool: True if the block header should be ignored, False otherwise.
         """
 
-        return (self.block_code & BFLAG_IGNORE) != 0
-    
+        return (self.flags() & StreamBlockHeader.BFLAG_IGNORE) != 0
+
+
     def is_fill(self):
         """
         Checks if the block header is a fill operation.
@@ -339,8 +437,27 @@ class StreamBlockHeader():
             bool: True if the block header is a fill operation, False otherwise.
         """
 
-        return (self.block_code & BFLAG_FILL) != 0
+        return (self.flags() & StreamBlockHeader.BFLAG_FILL) != 0
 
+
+    def check_bounds(self, start_addr, end_addr):
+        """
+        Checks if the target address is within the specified bounds.
+
+        This function checks if the target address is within the specified
+        start and end addresses. If the target address is outside of the
+        bounds, a RuntimeError is raised.
+
+        Args:
+            start_addr (int): The start address of the range.
+            end_addr (int): The end address of the range.
+        Returns:
+            None
+        """
+
+        block_start = self.fields["TARGET ADDRESS"]
+        block_end = self.fields["TARGET ADDRESS"] + self.fields["BYTE COUNT"]
+        return ((block_start >= start_addr) and (block_end <= end_addr))
 
     def is_within_sram(self):
         """
@@ -350,8 +467,8 @@ class StreamBlockHeader():
         of the BF59x memory map (0xFF800000 to 0xFF807FFF).
         """
 
-        return (self.target_address >= 0xFF800000) and \
-                ((self.target_address + self.byte_count) <= 0xFF807FFF)
+        return self.check_bounds(0xFF800000, 0xFF807FFF)
+
 
     def is_within_bootrom(self):
         """
@@ -361,15 +478,15 @@ class StreamBlockHeader():
         range of the BF59x memory map (0xFFA00000 to 0xFFA07FFF).
         """
 
-        return (self.target_address >= 0xFFA00000) and \
-                ((self.target_address + self.byte_count) <= 0xFFA07FFF)
+        return self.check_bounds(0xFFA00000, 0xFFA07FFF)
+
 
     def apply_fill(self, sram_filename, bootrom_filename):
         """
         Fills the target address with the specified argument.
 
-        This function fills `self.target_address` with `self.argument` for a
-        count of `self.byte_count` bytes, which must be divisible by 4.
+        This function fills `self.fields["TARGET ADDRESS"]` with `self.fields["ARGUMENT"]` for a
+        count of `self.fields["BYTE COUNT"]` bytes, which must be divisible by 4.
 
         Args:
             sram_file (file): The file object for the SRAM.
@@ -378,30 +495,31 @@ class StreamBlockHeader():
             None
         """
 
-        if self.byte_count % 4 != 0:
+        if self.fields["BYTE COUNT"] % 4 != 0:
             raise RuntimeError("Byte count must be divisible by 4")
 
         if self.is_within_sram():
             with open(sram_filename, "wb") as sram_file:
-                sram_file.seek(self.target_address - 0xFF800000, 0)
-                for _ in range(0, self.byte_count // 4):
-                    sram_file.write(int(self.argument).to_bytes(4))
+                sram_file.seek(self.fields["TARGET ADDRESS"] - 0xFF800000, 0)
+                for _ in range(0, self.fields["BYTE COUNT"] // 4):
+                    sram_file.write(int(self.fields["ARGUMENT"]).to_bytes(4))
 
         elif self.is_within_bootrom():
             with open(bootrom_filename, "wb") as bootrom_file:
-                bootrom_file.seek(self.target_address - 0xFFA00000, 0)
-                for _ in range(0, self.byte_count // 4):
-                    bootrom_file.write(int(self.argument).to_bytes(4))
+                bootrom_file.seek(self.fields["TARGET ADDRESS"] - 0xFFA00000, 0)
+                for _ in range(0, self.fields["BYTE COUNT"] // 4):
+                    bootrom_file.write(int(self.fields["ARGUMENT"]).to_bytes(4))
 
         else:
             raise RuntimeError
+
 
     def copy_data(self, block, sram_filename, bootrom_filename):
         """
         Copies the data from the block to the target address.
         
-        This function copies `self.byte_count` bytes from the incoming
-        `block` to the target address specified in `self.target_address`.
+        This function copies `self.fields["BYTE COUNT"]` bytes from the incoming
+        `block` to the target address specified in `self.fields["TARGET ADDRESS"]`.
 
         Args:
             block (SpiReadBlock): The incoming data block to be copied.
@@ -414,14 +532,14 @@ class StreamBlockHeader():
 
         if self.is_within_sram():
             with open(sram_filename, "wb") as sram_file:
-                sram_file.seek(self.target_address - 0xFF800000, 0)
-                for byte in block.data[0:self.byte_count]:
+                sram_file.seek(self.fields["TARGET ADDRESS"] - 0xFF800000, 0)
+                for byte in block.data[0:self.fields["BYTE COUNT"]]:
                     sram_file.write(byte.to_bytes())
 
         elif self.is_within_bootrom():
             with open(bootrom_filename, "wb") as bootrom_file:
-                bootrom_file.seek(self.target_address - 0xFFA00000, 0)
-                for byte in block.data[0:self.byte_count]:
+                bootrom_file.seek(self.fields["TARGET ADDRESS"] - 0xFFA00000, 0)
+                for byte in block.data[0:self.fields["BYTE COUNT"]]:
                     bootrom_file.write(byte.to_bytes())
 
         else:
@@ -434,14 +552,7 @@ parser.build_ldr_file(spi_read_blocks)
 bootstream_blk_headers = parser.handle_blocks(spi_read_blocks)
 
 print("SPI Read Blocks:")
-print("#\tStart Addr\tEnd Addr\t  Size")
-print("----------------------------------------------")
-for index, stream_block in enumerate(spi_read_blocks):
-    print(f"{index}\t{stream_block}")
-
+SpiReadBlock.print_block_table(spi_read_blocks)
 print()
 print("Bootstream Headers:")
-print("#\tBlock Code\tTarget Addr\tByte Count\tArgument")
-print("----------------------------------------------------------------")
-for index, block_header in enumerate(bootstream_blk_headers):
-    print(f"{index}\t{block_header}")
+StreamBlockHeader.print_header_table(bootstream_blk_headers)
