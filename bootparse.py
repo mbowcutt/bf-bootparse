@@ -21,9 +21,6 @@ class BootstreamParser():
     def __init__(self, csv_filename):
         self.cursor = 0
         self.addr_bytesize = None
-        self.state = STATE_PROCESS_HEADER
-        self.header_buf = []
-        self.headers = []
         self.stream = self.parse_file_csv(csv_filename)
 
     def parse_file_csv(self, filename):
@@ -159,8 +156,8 @@ class BootstreamParser():
                 for byte in block.data:
                     ldr_file.write(byte.to_bytes())
 
-    def handle_block(self, block,
-                     sram_filename="sram.bin", bootrom_filename="bootrom.bin"):
+    def handle_blocks(self, blocks,
+                      sram_filename="sram.bin", bootrom_filename="bootrom.bin"):
         """
         Processes the incoming data block as a block header or as raw data.
 
@@ -177,25 +174,31 @@ class BootstreamParser():
             None
         """
 
-        if STATE_PROCESS_HEADER == self.state:
+        state = STATE_PROCESS_HEADER
+        headers = []
 
-            header = block.parse_header()
-            if header is not None:
-                self.headers.append(header)
-                if header.validate():
-                    if header.block_code & BFLAG_IGNORE:
-                        return
-                    if header.block_code & BFLAG_FILL:
-                        header.apply_fill(sram_filename, bootrom_filename)
+        for block in blocks:
+            if STATE_PROCESS_HEADER == state:
+                header = block.parse_header()
+                if header is not None:
+                    headers.append(header)
+                    if header.validate():
+                        if header.ignore():
+                            continue
+
+                        if header.is_fill():
+                            header.apply_fill(sram_filename, bootrom_filename)
+                        else:
+                            state = STATE_COPY_DATA
                     else:
-                        self.state = STATE_COPY_DATA
-                else:
-                    print("Header is invalid")
-                    raise RuntimeError
+                        print("Header is invalid")
+                        raise RuntimeError
 
-        elif STATE_COPY_DATA == self.state:
-            self.headers[-1].copy_data(block, sram_filename, bootrom_filename)
-            self.state = STATE_PROCESS_HEADER
+            elif STATE_COPY_DATA == state:
+                headers[-1].copy_data(block, sram_filename, bootrom_filename)
+                state = STATE_PROCESS_HEADER
+
+        return headers
 
 class SpiReadBlock():
     """
@@ -306,6 +309,38 @@ class StreamBlockHeader():
         # TODO Check CRC
 
         return HDRSGN == (self.block_code & HDRSGN_MASK)
+    
+    def ignore(self):
+        """
+        Checks if the block header should be ignored.
+
+        This function checks if the block header has the ignore flag set.
+        If the ignore flag is set, the block header will be ignored.
+
+        Args:
+            None
+        Returns:
+            bool: True if the block header should be ignored, False otherwise.
+        """
+
+        return (self.block_code & BFLAG_IGNORE) != 0
+    
+    def is_fill(self):
+        """
+        Checks if the block header is a fill operation.
+
+        This function checks if the block header has the fill flag set.
+        If the fill flag is set, the block header will be treated as a
+        fill operation.
+
+        Args:
+            None
+        Returns:
+            bool: True if the block header is a fill operation, False otherwise.
+        """
+
+        return (self.block_code & BFLAG_FILL) != 0
+
 
     def is_within_sram(self):
         """
@@ -396,17 +431,17 @@ parser = BootstreamParser(sys.argv[1])
 parser.detect_address_size()
 spi_read_blocks = parser.parse_memory_blocks()
 parser.build_ldr_file(spi_read_blocks)
+bootstream_blk_headers = parser.handle_blocks(spi_read_blocks)
 
 print("SPI Read Blocks:")
 print("#\tStart Addr\tEnd Addr\t  Size")
 print("----------------------------------------------")
 for index, stream_block in enumerate(spi_read_blocks):
     print(f"{index}\t{stream_block}")
-    parser.handle_block(stream_block)
 
 print()
 print("Bootstream Headers:")
 print("#\tBlock Code\tTarget Addr\tByte Count\tArgument")
 print("----------------------------------------------------------------")
-for index, block_header in enumerate(parser.headers):
+for index, block_header in enumerate(bootstream_blk_headers):
     print(f"{index}\t{block_header}")
