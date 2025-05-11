@@ -1,7 +1,7 @@
 """Blackfin Bootstream Parser"""
 
-import sys
 import csv
+import sys
 
 SPI_CMD_READ        = 0x03
 SPI_CMD_READ_FAST   = 0x0B
@@ -18,19 +18,13 @@ class BootstreamParser():
     binaries for the SRAM and Boot ROM.
     """
 
-    def __init__(self, csv_filename, loader_file=None,
-                 data_file=None, instruction_file=None):
+    def __init__(self, csv_filename):
         self.cursor = 0
         self.addr_bytesize = None
         self.state = STATE_PROCESS_HEADER
         self.header_buf = []
-        self.header = None
         self.headers = []
         self.stream = self.parse_file_csv(csv_filename)
-        self.loader_file = open(loader_file, "wb")
-        self.data_file = open(data_file, "wb")
-        self.instruction_file = open(instruction_file, "wb")
-        self.blocks = []
 
     def parse_file_csv(self, filename):
         """
@@ -94,7 +88,7 @@ class BootstreamParser():
         self.addr_bytesize = bytesize
         self.cursor += bytesize+1
 
-    def read_memory_blocks(self):
+    def parse_memory_blocks(self):
         """
         Reads memory blocks from the SPI stream and stores them as SpiReadBlock objects.
 
@@ -106,23 +100,27 @@ class BootstreamParser():
         Args:
             None
         Returns:
-            None
+            list[SpiReadBlock]: A list of SpiReadBlock objects representing the
+                                parsed memory blocks.
         """
 
+        blocks = []
         while (self.cursor < len(self.stream)) and \
                 (SPI_CMD_READ == self.stream[self.cursor]['MOSI']):
             self.cursor += 1
 
-            addr = self.parse_address()
+            addr = self.__parse_address()
             data = []
             while (self.cursor < len(self.stream)) and \
                     (0x00 == self.stream[self.cursor]['MOSI']):
                 data.append(self.stream[self.cursor]['MISO'])
                 self.cursor += 1
 
-            self.blocks.append(SpiReadBlock(addr, data))
+            blocks.append(SpiReadBlock(addr, data))
 
-    def parse_address(self):
+        return blocks
+
+    def __parse_address(self):
         """
         Parses an address from the SPI stream.
 
@@ -141,7 +139,28 @@ class BootstreamParser():
         self.cursor += self.addr_bytesize
         return addr
 
-    def handle_block(self, block):
+    def build_ldr_file(self, blocks, ldr_filename="boot.ldr"):
+        """
+        Builds a loader file from the parsed blocks.
+
+        This function creates a loader file by writing the parsed blocks to the
+        specified `ldr_filename`. The blocks are written in a specific format
+        that can be used for further processing or analysis.
+
+        Args:
+            ldr_filename (str): The name of the loader file to be created.
+            blocks (list[SpiReadBlock]): The list of parsed blocks to be written.
+        Returns:
+            None
+        """
+
+        with open(ldr_filename, "wb") as ldr_file:
+            for block in blocks:
+                for byte in block.data:
+                    ldr_file.write(byte.to_bytes())
+
+    def handle_block(self, block,
+                     sram_filename="sram.bin", bootrom_filename="bootrom.bin"):
         """
         Processes the incoming data block as a block header or as raw data.
 
@@ -159,8 +178,6 @@ class BootstreamParser():
         """
 
         if STATE_PROCESS_HEADER == self.state:
-            for byte in block.data:
-                self.loader_file.write(byte.to_bytes())
 
             header = block.parse_header()
             if header is not None:
@@ -169,20 +186,15 @@ class BootstreamParser():
                     if header.block_code & BFLAG_IGNORE:
                         return
                     if header.block_code & BFLAG_FILL:
-                        header.apply_fill(self.data_file,
-                                          self.instruction_file)
+                        header.apply_fill(sram_filename, bootrom_filename)
                     else:
                         self.state = STATE_COPY_DATA
                 else:
                     print("Header is invalid")
-                    raise RuntimeError            
+                    raise RuntimeError
 
         elif STATE_COPY_DATA == self.state:
-            for byte in block.data[0:self.headers[-1].byte_count]:
-                self.loader_file.write(byte.to_bytes())
-
-            self.headers[-1].copy_data(block, self.data_file,
-                                       self.instruction_file)
+            self.headers[-1].copy_data(block, sram_filename, bootrom_filename)
             self.state = STATE_PROCESS_HEADER
 
 class SpiReadBlock():
@@ -205,7 +217,7 @@ class SpiReadBlock():
 
     def __len__(self):
         return len(self.data)
-    
+
     def parse_header(self):
         """
         Parses the header from the incoming data.
@@ -317,7 +329,7 @@ class StreamBlockHeader():
         return (self.target_address >= 0xFFA00000) and \
                 ((self.target_address + self.byte_count) <= 0xFFA07FFF)
 
-    def apply_fill(self, sram_file, bootrom_file):
+    def apply_fill(self, sram_filename, bootrom_filename):
         """
         Fills the target address with the specified argument.
 
@@ -335,23 +347,21 @@ class StreamBlockHeader():
             raise RuntimeError("Byte count must be divisible by 4")
 
         if self.is_within_sram():
-            # print("Filling {} bytes in SRAM at 0x{:08X}"
-            #     .format(self.byte_count, self.target_address))
-            sram_file.seek(self.target_address - 0xFF800000, 0)
-            for _ in range(0, self.byte_count // 4):
-                sram_file.write(int(self.argument).to_bytes(4))
+            with open(sram_filename, "wb") as sram_file:
+                sram_file.seek(self.target_address - 0xFF800000, 0)
+                for _ in range(0, self.byte_count // 4):
+                    sram_file.write(int(self.argument).to_bytes(4))
 
         elif self.is_within_bootrom():
-            # print("Filling {} bytes in Boot ROM at 0x{:08X}"
-            #     .format(self.byte_count, self.target_address))
-            bootrom_file.seek(self.target_address - 0xFFA00000, 0)
-            for _ in range(0, self.byte_count // 4):
-                bootrom_file.write(int(self.argument).to_bytes(4))
+            with open(bootrom_filename, "wb") as bootrom_file:
+                bootrom_file.seek(self.target_address - 0xFFA00000, 0)
+                for _ in range(0, self.byte_count // 4):
+                    bootrom_file.write(int(self.argument).to_bytes(4))
 
         else:
             raise RuntimeError
 
-    def copy_data(self, block, sram_file, bootrom_file):
+    def copy_data(self, block, sram_filename, bootrom_filename):
         """
         Copies the data from the block to the target address.
         
@@ -368,31 +378,29 @@ class StreamBlockHeader():
         """
 
         if self.is_within_sram():
-            # print("Copying {} bytes to SRAM at 0x{:08X}"
-            #     .format(self.byte_count, self.target_address))
-            sram_file.seek(self.target_address - 0xFF800000, 0)
-            for byte in block.data[0:self.byte_count]:
-                sram_file.write(byte.to_bytes())
+            with open(sram_filename, "wb") as sram_file:
+                sram_file.seek(self.target_address - 0xFF800000, 0)
+                for byte in block.data[0:self.byte_count]:
+                    sram_file.write(byte.to_bytes())
 
         elif self.is_within_bootrom():
-            # print("Copying {} bytes to Boot ROM at 0x{:08X}"
-            #     .format(self.byte_count, self.target_address))
-            bootrom_file.seek(self.target_address - 0xFFA00000, 0)
-            for byte in block.data[0:self.byte_count]:
-                bootrom_file.write(byte.to_bytes())
+            with open(bootrom_filename, "wb") as bootrom_file:
+                bootrom_file.seek(self.target_address - 0xFFA00000, 0)
+                for byte in block.data[0:self.byte_count]:
+                    bootrom_file.write(byte.to_bytes())
 
         else:
             raise RuntimeError
 
-parser = BootstreamParser(sys.argv[1], 'dist/bootstream.ldr',
-                          'dist/sram.bin', 'dist/bootrom.bin')
+parser = BootstreamParser(sys.argv[1])
 parser.detect_address_size()
-parser.read_memory_blocks()
+spi_read_blocks = parser.parse_memory_blocks()
+parser.build_ldr_file(spi_read_blocks)
 
 print("SPI Read Blocks:")
 print("#\tStart Addr\tEnd Addr\t  Size")
 print("----------------------------------------------")
-for index, stream_block in enumerate(parser.blocks):
+for index, stream_block in enumerate(spi_read_blocks):
     print(f"{index}\t{stream_block}")
     parser.handle_block(stream_block)
 
@@ -402,7 +410,3 @@ print("#\tBlock Code\tTarget Addr\tByte Count\tArgument")
 print("----------------------------------------------------------------")
 for index, block_header in enumerate(parser.headers):
     print(f"{index}\t{block_header}")
-
-parser.loader_file.close()
-parser.data_file.close()
-parser.instruction_file.close()
