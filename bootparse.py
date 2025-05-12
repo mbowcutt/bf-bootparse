@@ -1,13 +1,13 @@
 """Blackfin Bootstream Parser"""
 
 import csv
-import sys
 
 SPI_CMD_READ        = 0x03
 SPI_CMD_READ_FAST   = 0x0B
 
 STATE_PROCESS_HEADER = 0
 STATE_COPY_DATA = 1
+
 
 class BootstreamParser():
     """
@@ -49,6 +49,7 @@ class BootstreamParser():
                                      "MISO": int(line[3],16)})
         return spi_byte_arr
 
+
     def detect_address_size(self):
         """
         Detects the address size of the SPI slave device.
@@ -85,6 +86,7 @@ class BootstreamParser():
         self.addr_bytesize = bytesize
         self.cursor += bytesize+1
 
+
     def parse_memory_blocks(self):
         """
         Reads memory blocks from the SPI stream and stores them as SpiReadBlock objects.
@@ -117,6 +119,7 @@ class BootstreamParser():
 
         return blocks
 
+
     def __parse_address(self):
         """
         Parses an address from the SPI stream.
@@ -135,6 +138,7 @@ class BootstreamParser():
 
         self.cursor += self.addr_bytesize
         return addr
+
 
     def build_ldr_file(self, blocks, ldr_filename="boot.ldr"):
         """
@@ -155,6 +159,7 @@ class BootstreamParser():
             for block in blocks:
                 for byte in block.data:
                     ldr_file.write(byte.to_bytes())
+
 
     def handle_blocks(self, blocks,
                       sram_filename="sram.bin", bootrom_filename="bootrom.bin"):
@@ -200,17 +205,19 @@ class BootstreamParser():
 
         return headers
 
+
 class SpiReadBlock():
     """
     Represents an address and data block from a SPI Read command.
 
     This class is used to store the address and data received from a SPI
-    Read command. It also provides methods to parse a StreamBlockHeader from
+    Read command. It also provides methods to parse a BF59xBlkHdr from
     the data block.
     """
 
     header_buf = []
     count = 0
+
 
     def __init__(self, addr, data):
         self.addr = addr
@@ -218,11 +225,13 @@ class SpiReadBlock():
         self.block_index = SpiReadBlock.count
         SpiReadBlock.count += 1
 
+
     def __str__(self):
         return f"{self.block_index}\t" + \
                f"0x{self.addr:06X}\t" + \
                f"0x{self.addr+len(self.data):06X}\t" + \
                f"{len(self.data):>6}"
+
 
     def __len__(self):
         return len(self.data)
@@ -266,22 +275,22 @@ class SpiReadBlock():
 
         This function checks the length of `self.data` to determine if it
         contains a partial or complete header. Once a complete header is 
-        obtained a `StreamBlockHeader` object is created and returned.
+        obtained a `BF59xBlkHdr` object is created and returned.
 
         Args:
             None
         Returns:
-            StreamBlockHeader: The parsed block header object.
+            BF59xBlkHdr: The parsed block header object.
         """
 
         if 16 == len(self.data):
-            return StreamBlockHeader(self.data, self.block_index)
+            return BF59xBlkHdr(self.data, self.block_index)
 
         if 8 == len(self.data):
             for byte in self.data:
                 SpiReadBlock.header_buf.append(byte)
             if 16 == len(self.header_buf):
-                header = StreamBlockHeader(SpiReadBlock.header_buf,
+                header = BF59xBlkHdr(SpiReadBlock.header_buf,
                                            self.block_index)
                 SpiReadBlock.header_buf.clear()
                 return header
@@ -291,9 +300,9 @@ class SpiReadBlock():
             raise RuntimeError
 
 
-class StreamBlockHeader():
+class BF59xBlkHdr():
     """
-    Represents a stream block header.
+    Represents a ADSP BF59x bootstream block header.
 
     This class represents a stream block header on BF59x devices. It contains
     a block code, target address, byte count, and an argument. The class has
@@ -321,14 +330,16 @@ class StreamBlockHeader():
 
     header_count = 0
 
+
     def __init__(self, raw, block_idx):
         self.fields = { "BLOCK CODE": int.from_bytes(reversed(raw[0:4])),
                         "TARGET ADDRESS": int.from_bytes(reversed(raw[4:8])),
                         "BYTE COUNT": int.from_bytes(reversed(raw[8:12])),
                         "ARGUMENT": int.from_bytes(reversed(raw[12:16])) }
         self.block_idx = block_idx
-        self.header_idx = StreamBlockHeader.header_count
-        StreamBlockHeader.header_count += 1
+        self.header_idx = BF59xBlkHdr.header_count
+        BF59xBlkHdr.header_count += 1
+
 
     def __str__(self):
         return f"{self.header_idx}\t" +\
@@ -362,14 +373,15 @@ class StreamBlockHeader():
         block header.
 
         Args:
-            headers (list[StreamBlockHeader]): The list of block headers to be printed.
+            headers (list[BF59xBlkHdr]): The list of block headers to be printed.
         Returns:
             None
         """
 
-        StreamBlockHeader.print_table_header()
+        BF59xBlkHdr.print_table_header()
         for header in headers:
             print(f"{header}")
+
 
     def validate(self):
         """
@@ -388,8 +400,8 @@ class StreamBlockHeader():
 
         # TODO Check CRC
 
-        return StreamBlockHeader.HDRSGN == \
-                   (self.fields["BLOCK CODE"] & StreamBlockHeader.HDRSGN_MASK)
+        return BF59xBlkHdr.HDRSGN == \
+                   (self.fields["BLOCK CODE"] & BF59xBlkHdr.HDRSGN_MASK)
 
 
     def flags(self):
@@ -404,7 +416,7 @@ class StreamBlockHeader():
             int: The flags of the block header.
         """
 
-        return self.fields["BLOCK CODE"] & StreamBlockHeader.BFLAG_MASK
+        return self.fields["BLOCK CODE"] & BF59xBlkHdr.BFLAG_MASK
 
 
     def ignore(self):
@@ -420,7 +432,7 @@ class StreamBlockHeader():
             bool: True if the block header should be ignored, False otherwise.
         """
 
-        return (self.flags() & StreamBlockHeader.BFLAG_IGNORE) != 0
+        return (self.flags() & BF59xBlkHdr.BFLAG_IGNORE) != 0
 
 
     def is_fill(self):
@@ -437,7 +449,7 @@ class StreamBlockHeader():
             bool: True if the block header is a fill operation, False otherwise.
         """
 
-        return (self.flags() & StreamBlockHeader.BFLAG_FILL) != 0
+        return (self.flags() & BF59xBlkHdr.BFLAG_FILL) != 0
 
 
     def check_bounds(self, start_addr, end_addr):
@@ -458,6 +470,7 @@ class StreamBlockHeader():
         block_start = self.fields["TARGET ADDRESS"]
         block_end = self.fields["TARGET ADDRESS"] + self.fields["BYTE COUNT"]
         return ((block_start >= start_addr) and (block_end <= end_addr))
+
 
     def is_within_sram(self):
         """
@@ -544,15 +557,3 @@ class StreamBlockHeader():
 
         else:
             raise RuntimeError
-
-parser = BootstreamParser(sys.argv[1])
-parser.detect_address_size()
-spi_read_blocks = parser.parse_memory_blocks()
-parser.build_ldr_file(spi_read_blocks)
-bootstream_blk_headers = parser.handle_blocks(spi_read_blocks)
-
-print("SPI Read Blocks:")
-SpiReadBlock.print_block_table(spi_read_blocks)
-print()
-print("Bootstream Headers:")
-StreamBlockHeader.print_header_table(bootstream_blk_headers)
