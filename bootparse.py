@@ -1,13 +1,16 @@
+#!/usr/bin/env python3
+
 """Blackfin Bootstream Parser"""
 
+import argparse
 import csv
+import sys
 
 SPI_CMD_READ        = 0x03
 SPI_CMD_READ_FAST   = 0x0B
 
 STATE_PROCESS_HEADER = 0
 STATE_COPY_DATA = 1
-
 
 class BootstreamParser():
     """
@@ -152,14 +155,16 @@ class BootstreamParser():
             ldr_filename (str): The name of the loader file to be created.
             blocks (list[SpiReadBlock]): The list of parsed blocks to be written.
         Returns:
-            None
+            int: The number of bytes written to the loader file.
         """
 
+        bytes_written = 0
         with open(ldr_filename, "wb") as ldr_file:
             for block in blocks:
                 for byte in block.data:
                     ldr_file.write(byte.to_bytes())
-
+                    bytes_written += 1
+        return bytes_written
 
     def handle_blocks(self, blocks,
                       sram_filename="sram.bin", bootrom_filename="bootrom.bin"):
@@ -512,12 +517,18 @@ class BF59xBlkHdr():
             raise RuntimeError("Byte count must be divisible by 4")
 
         if self.is_within_sram():
+            if sram_filename is None:
+                return
+
             with open(sram_filename, "wb") as sram_file:
                 sram_file.seek(self.fields["TARGET ADDRESS"] - 0xFF800000, 0)
                 for _ in range(0, self.fields["BYTE COUNT"] // 4):
                     sram_file.write(int(self.fields["ARGUMENT"]).to_bytes(4))
 
         elif self.is_within_bootrom():
+            if bootrom_filename is None:
+                return
+
             with open(bootrom_filename, "wb") as bootrom_file:
                 bootrom_file.seek(self.fields["TARGET ADDRESS"] - 0xFFA00000, 0)
                 for _ in range(0, self.fields["BYTE COUNT"] // 4):
@@ -544,12 +555,18 @@ class BF59xBlkHdr():
         """
 
         if self.is_within_sram():
+            if sram_filename is None:
+                return
+
             with open(sram_filename, "wb") as sram_file:
                 sram_file.seek(self.fields["TARGET ADDRESS"] - 0xFF800000, 0)
                 for byte in block.data[0:self.fields["BYTE COUNT"]]:
                     sram_file.write(byte.to_bytes())
 
         elif self.is_within_bootrom():
+            if bootrom_filename is None:
+                return
+
             with open(bootrom_filename, "wb") as bootrom_file:
                 bootrom_file.seek(self.fields["TARGET ADDRESS"] - 0xFFA00000, 0)
                 for byte in block.data[0:self.fields["BYTE COUNT"]]:
@@ -557,3 +574,83 @@ class BF59xBlkHdr():
 
         else:
             raise RuntimeError
+
+
+if __name__ == "__main__":
+
+    argparser = argparse.ArgumentParser(prog='bootparse.py',
+                                        formatter_class=argparse.RawDescriptionHelpFormatter,
+                                        description='''
+SPI trace parser for Analog Devices Blackfin devices.
+Parses a CSV file containing SPI trace data and outputs a loader file.
+                                        ''',
+                                        epilog='''
+Examples:
+    bootparse.py spi_trace.csv
+    bootparse.py spi_trace.csv -o boot.ldr
+    bootparse.py spi_trace.csv -s sram.bin -i bootrom.bin
+    bootparse.py spi_trace.csv --print-reads
+    bootparse.py spi_trace.csv --print-headers
+    bootparse.py spi_trace.csv -o boot.ldr -s sram.bin -i bootrom.bin --print-reads --print-headers
+                                        ''')
+    argparser.add_argument('csv_file', type=str,
+                            help='CSV file containing SPI trace data')
+    argparser.add_argument('-o', '--output', type=str,
+                            help='Output file name for the loader file',
+                            default='boot.ldr')
+    argparser.add_argument('-s', '--sram', type=str,
+                            help='Output file name for the SRAM',
+                            default=None)
+    argparser.add_argument('-i', '--instruction_rom', type=str,
+                            help='Output file name for the instruction ROM',
+                            default=None)
+    argparser.add_argument('--print-reads', action='store_true',
+                            help='Print a table of SPI read addresses and lengths')
+    argparser.add_argument('--print-headers', action='store_true',
+                            help='Print a table of bootstream block headers')
+    args = argparser.parse_args()
+
+    print("Blackfin Bootstream Parser")
+    print("=========================================")
+    print("Parsing CSV file: ", args.csv_file)
+    print("Output file: ", args.output)
+    print("SRAM file: ", args.sram)
+    print("Instruction ROM file: ", args.instruction_rom)
+    print("=========================================")
+
+    # Check if the CSV file exists
+    if not args.csv_file:
+        print("Error: CSV file not specified.")
+        sys.exit(1)
+
+    # Parse the CSV file
+    parser = BootstreamParser(args.csv_file)
+    print(f"Loaded {len(parser.stream)} SPI transactions")
+
+    # Detect the address size
+    parser.detect_address_size()
+    print(f"Using {parser.addr_bytesize * 8}-bit addressing")
+
+    # Parse the SPI reads
+    spi_read_blocks = parser.parse_memory_blocks()
+    print(f"Parsed {len(spi_read_blocks)} SPI read blocks")
+
+    # Build the loader file
+    bytes_written = parser.build_ldr_file(spi_read_blocks, args.output)
+    print(f"Wrote {bytes_written} bytes to {args.output}")
+
+    # Handle the blocks and create SRAM and Boot ROM files
+    bootstream_blk_headers = parser.handle_blocks(spi_read_blocks,
+                                                  args.sram,
+                                                  args.instruction_rom)
+    print(f"Found {len(bootstream_blk_headers)} block headers in bootstream")
+
+    # Optionally print the SPI read blocks and bootstream headers
+    if args.print_reads:
+        print("SPI Read Blocks:")
+        SpiReadBlock.print_block_table(spi_read_blocks)
+        print()
+    if args.print_headers:
+        print("Bootstream Headers:")
+        BF59xBlkHdr.print_header_table(bootstream_blk_headers)
+        print()
